@@ -127,6 +127,14 @@ def matches_price_code(query: str, price_code: str) -> bool:
     p = price_code.upper().strip()
     if q == "Z1":
         return p == "Z1"
+    # Mercedes: 611 -> A611, 612 -> A612 и т.д.
+    if q.isdigit():
+        if p == "A" + q:
+            return True
+    # Обратно: A611 -> 611
+    if q.startswith("A") and q[1:].isdigit():
+        if p == q[1:] or p == q:
+            return True
     return p.startswith(q) or q.startswith(p)
 
 
