@@ -1,12 +1,14 @@
 """
-Motor Search Telegram Bot — финальная версия
+Motor Search Telegram Bot — aiogram версия
 """
 
 import logging
 import os
 from openpyxl import load_workbook
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message
+from aiogram.filters import CommandStart, Command
+import asyncio
 
 # ─── НАСТРОЙКИ ────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВСТАВЬ_ТОКЕН_СЮДА")
@@ -14,10 +16,7 @@ LISTE_FILE = "LISTE_100_-_31-12-2025.xlsx"
 PRICES_FILE = "Моторы_цены_диапазон.xlsx"
 MIN_QUERY_LEN = 3
 
-# Коды которые НЕ привязываем к списку 1 (случайные совпадения)
 IGNORE_CODES = {"OM", "MB", "CD"}
-
-# Коды у которых поиск только по точному совпадению начала слова (не подстрока)
 EXACT_START_CODES = {"Z1", "HR", "YD", "QG", "F14D", "B12D", "B12S", "350A"}
 
 logging.basicConfig(
@@ -35,8 +34,7 @@ KNOWN_BRANDS = {
     "volkswagen", "vw", "volvo", "peugeot",
 }
 
-def load_liste(filepath: str) -> list[dict]:
-    """Загружает список 1 — коды моторов с марками."""
+def load_liste(filepath: str) -> list:
     wb = load_workbook(filepath, read_only=True, data_only=True)
     motors = []
     for sheet in wb.worksheets:
@@ -59,11 +57,7 @@ def load_liste(filepath: str) -> list[dict]:
     return motors
 
 
-def load_prices(filepath: str) -> dict[str, dict]:
-    """
-    Загружает список 2 — коды с ценами.
-    Возвращает словарь: { "K9K": {"min": 150, "max": 400, "qty": 420}, ... }
-    """
+def load_prices(filepath: str) -> dict:
     wb = load_workbook(filepath, read_only=True, data_only=True)
     prices = {}
     for sheet in wb.worksheets:
@@ -91,9 +85,8 @@ def load_prices(filepath: str) -> dict[str, dict]:
     return prices
 
 
-# Глобальные данные
-LISTE: list[dict] = []
-PRICES: dict[str, dict] = {}
+LISTE: list = []
+PRICES: dict = {}
 
 
 def reload_data():
@@ -118,19 +111,9 @@ def reload_data():
 # ─── ЛОГИКА ПОИСКА ────────────────────────────────────────────────────────────
 
 def matches_code(query: str, code: str) -> bool:
-    """
-    Проверяет, совпадает ли запрос с кодом из списка 1.
-
-    Правила:
-    - Для кодов из EXACT_START_CODES: совпадение только если слово в коде
-      начинается точно с query (например, HR → HR16, но не 4HR).
-    - Для остальных: query является подстрокой кода.
-    """
     q = query.upper()
     c = code.upper()
-
     if q in EXACT_START_CODES:
-        # Ищем слово в коде, которое начинается с q
         for word in c.replace(",", " ").split():
             if word.startswith(q):
                 return True
@@ -140,45 +123,21 @@ def matches_code(query: str, code: str) -> bool:
 
 
 def matches_price_code(query: str, price_code: str) -> bool:
-    """
-    Проверяет совпадение запроса с кодом из списка 2 (цены).
-
-    Логика:
-    - Запрос совпадает если price_code начинается с query (K9K → K9K 724)
-      ИЛИ query начинается с price_code (M57D30 → M57D).
-    - Для Z1: только точное совпадение.
-    """
     q = query.upper().strip()
     p = price_code.upper().strip()
-
     if q == "Z1":
         return p == "Z1"
-
     return p.startswith(q) or q.startswith(p)
 
 
 def search(query: str) -> dict:
-    """
-    Возвращает:
-      {
-        "liste_hits":  [ {"brand": ..., "code": ...}, ... ],  # из списка 1
-        "price_info":  {"min": ..., "max": ..., "qty": ...} | None,
-        "price_code":  "K9K" | None,   # какой код из списка 2 сработал
-      }
-    """
     q = query.strip()
-
-    # --- Список 1 ---
     liste_hits = [m for m in LISTE if matches_code(q, m["code"])]
 
-    # --- Список 2 ---
     price_info = None
     price_code_matched = None
-
-    # Сначала пробуем точное совпадение с кодом из списка 2
     for pcode, pdata in PRICES.items():
         if matches_price_code(q, pcode):
-            # Берём первое совпадение (или наиболее длинное)
             if price_code_matched is None or len(pcode) > len(price_code_matched):
                 price_code_matched = pcode
                 price_info = pdata
@@ -190,21 +149,18 @@ def search(query: str) -> dict:
     }
 
 
-# ─── ФОРМАТИРОВАНИЕ ОТВЕТА ────────────────────────────────────────────────────
+# ─── ФОРМАТИРОВАНИЕ ───────────────────────────────────────────────────────────
 
 def format_response(query: str, result: dict) -> str:
-    hits   = result["liste_hits"]
-    pinfo  = result["price_info"]
-    pcode  = result["price_code"]
-
+    hits  = result["liste_hits"]
+    pinfo = result["price_info"]
+    pcode = result["price_code"]
     lines = []
 
     if hits:
-        # Группируем по марке
-        grouped: dict[str, list[str]] = {}
+        grouped: dict = {}
         for m in hits:
             grouped.setdefault(m["brand"], []).append(m["code"])
-
         lines.append(f"✅ <b>{query.upper()}</b> — найден в списке ({len(hits)} вар.):\n")
         for brand, codes in grouped.items():
             lines.append(f"🚗 <b>{brand}</b>")
@@ -233,17 +189,22 @@ def format_response(query: str, result: dict) -> str:
 
 # ─── ХЕНДЛЕРЫ ─────────────────────────────────────────────────────────────────
 
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+dp = Dispatcher()
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
     text = (
         "👋 Привет! Введи код или маркировку мотора (минимум 3 символа).\n\n"
         "Примеры: <code>K4M</code>, <code>K9K</code>, <code>M57D</code>, <code>N52</code>\n\n"
         "/help — помощь\n"
         "/reload — перезагрузить списки"
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML")
 
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
     text = (
         "🔍 <b>Как пользоваться:</b>\n"
         "Напиши код мотора или его часть — минимум 3 символа.\n"
@@ -255,47 +216,39 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Моторов в списке: <b>{len(LISTE)}</b>\n"
         f"💰 Кодов с ценами: <b>{len(PRICES)}</b>"
     )
-    await update.message.reply_text(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML")
 
 
-async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Перезагружаю списки...")
+@dp.message(Command("reload"))
+async def cmd_reload(message: Message):
+    await message.answer("🔄 Перезагружаю списки...")
     reload_data()
-    await update.message.reply_text(
+    await message.answer(
         f"✅ Готово!\n📋 Моторов в списке: {len(LISTE)}\n💰 Кодов с ценами: {len(PRICES)}"
     )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.message.text.strip()
-
+@dp.message(F.text)
+async def handle_message(message: Message):
+    query = message.text.strip()
     if len(query) < MIN_QUERY_LEN:
-        await update.message.reply_text(
-            f"⚠️ Введи минимум {MIN_QUERY_LEN} символа."
-        )
+        await message.answer(f"⚠️ Введи минимум {MIN_QUERY_LEN} символа.")
         return
-
     result = search(query)
     text = format_response(query, result)
-
     if len(text) > 4000:
         text = text[:3990] + "\n\n...список обрезан, уточни запрос."
-
-    await update.message.reply_text(text, parse_mode="HTML")
+    await message.answer(text, parse_mode="HTML")
 
 
 # ─── ЗАПУСК ───────────────────────────────────────────────────────────────────
 
-def main():
+async def main():
     reload_data()
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("reload", cmd_reload))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    bot = Bot(token=BOT_TOKEN)
     logger.info("Бот запущен...")
-    app.run_polling()
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
