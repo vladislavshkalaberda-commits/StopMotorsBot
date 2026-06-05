@@ -130,17 +130,33 @@ def matches_price_code(query: str, price_code: str) -> bool:
     return p.startswith(q) or q.startswith(p)
 
 
+def extract_tokens(code: str) -> list:
+    """Извлекает отдельные токены из строки типа 'BSE, BGU, BSF 1.6B'"""
+    import re
+    # Берём только буквенно-цифровые токены длиной >= 3
+    return re.findall(r'[A-Za-z0-9]{3,}', code)
+
+
 def search(query: str) -> dict:
     q = query.strip()
     liste_hits = [m for m in LISTE if matches_code(q, m["code"])]
 
     price_info = None
     price_code_matched = None
-    for pcode, pdata in PRICES.items():
-        if matches_price_code(q, pcode):
-            if price_code_matched is None or len(pcode) > len(price_code_matched):
-                price_code_matched = pcode
-                price_info = pdata
+
+    # Собираем все поисковые термины: сам запрос + токены из найденных строк списка 1
+    search_terms = [q]
+    for hit in liste_hits:
+        search_terms.extend(extract_tokens(hit["code"]))
+
+    # Ищем цену по любому из терминов
+    for term in search_terms:
+        for pcode, pdata in PRICES.items():
+            if matches_price_code(term, pcode):
+                # Предпочитаем более длинный (точный) код
+                if price_code_matched is None or len(pcode) > len(price_code_matched):
+                    price_code_matched = pcode
+                    price_info = pdata
 
     return {
         "liste_hits": liste_hits,
